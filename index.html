@@ -224,10 +224,10 @@ button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
 /* ========== MÚSICA (opcional) ========== */
 .musica{
   position:fixed;z-index:30;top:max(12px,env(safe-area-inset-top));right:12px;
-  width:42px;height:42px;border-radius:50%;display:none;place-items:center;
+  width:42px;height:42px;border-radius:50%;display:grid;place-items:center;
   background:rgba(0,0,0,.35);color:var(--dourado-claro);border:1px solid rgba(232,211,162,.4);
 }
-.musica.mostrar{display:grid}
+.musica{font-size:1.1rem;transition:opacity .3s}
 
 /* ========== MOVIMENTO REDUZIDO ========== */
 @media (prefers-reduced-motion:reduce){
@@ -240,11 +240,12 @@ button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
 
 <div id="fundo" aria-hidden="true"></div>
 
-<!-- Música de fundo (opcional): descomente a linha <source> e coloque musica.mp3 na mesma pasta -->
+<!-- Música: por padrão toca uma melodia alegre criada pelo próprio código (sem arquivo).
+     Para usar sua música: coloque musica.mp3 na mesma pasta e descomente a linha <source> abaixo. -->
 <audio id="audio" loop preload="none">
   <!-- <source src="musica.mp3" type="audio/mpeg"> -->
 </audio>
-<button class="musica" id="btnMusica" aria-label="Ligar ou desligar a música">♪</button>
+<button class="musica" id="btnMusica" aria-label="Ligar ou desligar a música" aria-pressed="true">🔊</button>
 
 <!-- ENVELOPE -->
 <main class="palco" id="palco">
@@ -368,6 +369,7 @@ button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
   async function abrir() {
     if (ocupado || estaAberta) return;
     ocupado = true;
+    musicaAuto();
     const minha = ++sessao;
     envelope.disabled = true;
     dica.style.opacity = 0;
@@ -412,16 +414,93 @@ button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
   fechar.addEventListener('click', fecharCarta);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharCarta(); });
 
-  /* ---------- Música (só aparece se existir um <source> no <audio>) ---------- */
+  /* ---------- Música ---------- */
   const audio = $('audio'), btnMusica = $('btnMusica');
-  if (audio.querySelector('source')) {
-    btnMusica.classList.add('mostrar');
-    envelope.addEventListener('click', () => audio.play().catch(() => {}), { once: true });
-    btnMusica.addEventListener('click', () => {
-      audio.paused ? audio.play() : audio.pause();
-      btnMusica.style.opacity = audio.paused ? .5 : 1;
+  const temArquivo = !!audio.querySelector('source');
+  let ctx, mestre, proxTempo = 0, compasso = 0, timer, tocando = false, iniciou = false;
+
+  // Melodia alegre e saltitante (tom maior, ritmo animado) gerada com Web Audio — sem arquivos
+  const BPM = 108, batida = 60 / BPM;
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+  const acordes = [[48,60,64,67],[43,59,62,67],[45,60,64,69],[41,57,60,65]]; // C, G, Am, F
+  const melodias = [
+    [[[0,79],[.5,79],[1,81],[2,79],[3,76]], [[0,74],[.5,74],[1,76],[2,74],[3,71]],
+     [[0,72],[.5,76],[1,79],[2,81],[3,79]], [[0,77],[1,76],[2,74],[2.5,72],[3,72]]],
+    [[[0,84],[1,81],[1.5,79],[2,76],[3,79]], [[0,83],[1,79],[2,74],[2.5,76],[3,79]],
+     [[0,81],[.5,81],[1,84],[2,81],[3,76]], [[0,84],[1,81],[2,79],[2.5,77],[3,76]]]
+  ];
+  const arpejo = [1,2,3,2,1,2,3,2];
+  let ruido;
+
+  function nota(m, t, dur, vol) {
+    [[1,1,1],[2,.35,.5],[3,.15,.3]].forEach(([mult, v, d]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = hz(m) * mult;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vol * v, t + .012);
+      g.gain.exponentialRampToValueAtTime(.0001, t + dur * d);
+      o.connect(g); g.connect(mestre);
+      o.start(t); o.stop(t + dur * d + .05);
     });
   }
+  function pad(m, t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'triangle'; o.frequency.value = hz(m);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(.018, t + 1.4);
+    g.gain.linearRampToValueAtTime(.0001, t + 4 * batida);
+    o.connect(g); g.connect(mestre);
+    o.start(t); o.stop(t + 4 * batida + .1);
+  }
+  function tic(t, v) {   // chocalho suave
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = ruido; f.type = 'highpass'; f.frequency.value = 7000;
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.0001, t + .06);
+    s.connect(f); f.connect(g); g.connect(ctx.destination);
+    s.start(t); s.stop(t + .08);
+  }
+  function agendar(c) {
+    const ac = acordes[c % 4], mel = melodias[Math.floor(c / 4) % 2][c % 4], t = proxTempo;
+    [[0,0],[1.5,7],[2,0],[3.5,7]].forEach(([b, up]) => nota(ac[0] + up, t + b * batida, batida * .9, .16));
+    ac.slice(1).forEach(m => pad(m, t));
+    arpejo.forEach((idx, i) => nota(ac[idx], t + i * batida / 2, batida * .7, .06));
+    mel.forEach(([b, m]) => nota(m, t + b * batida, batida * 1.4, .12));
+    for (let i = 0; i < 8; i++) tic(t + i * batida / 2, i % 2 ? .03 : .014);
+    proxTempo += 4 * batida;
+  }
+  function iniciarSintetizada() {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    ruido = ctx.createBuffer(1, ctx.sampleRate * .1, ctx.sampleRate);
+    ruido.getChannelData(0).forEach((_, i, d) => d[i] = Math.random() * 2 - 1);
+    mestre = ctx.createGain(); mestre.gain.value = 0;
+    // eco suave para dar sensação de ambiente
+    const atraso = ctx.createDelay(); atraso.delayTime.value = batida * .75;
+    const fb = ctx.createGain(); fb.gain.value = .3;
+    const filtro = ctx.createBiquadFilter(); filtro.type = 'lowpass'; filtro.frequency.value = 3500;
+    mestre.connect(ctx.destination); mestre.connect(atraso);
+    atraso.connect(filtro); filtro.connect(fb); fb.connect(atraso); filtro.connect(ctx.destination);
+    mestre.gain.linearRampToValueAtTime(.7, ctx.currentTime + 3);   // entrada suave
+    proxTempo = ctx.currentTime + .1;
+    timer = setInterval(() => { while (proxTempo < ctx.currentTime + 3) agendar(compasso++); }, 400);
+  }
+  function atualizarBotao() {
+    btnMusica.textContent = tocando ? '🔊' : '🔇';
+    btnMusica.setAttribute('aria-pressed', String(tocando));
+    btnMusica.style.opacity = tocando ? 1 : .6;
+  }
+  function iniciarMusica() {
+    iniciou = true;
+    if (temArquivo) { audio.volume = .6; audio.play().catch(() => {}); } else iniciarSintetizada();
+    tocando = true; atualizarBotao();
+  }
+  function musicaAuto() { if (!iniciou) iniciarMusica(); }
+  btnMusica.addEventListener('click', () => {
+    if (!iniciou) return iniciarMusica();
+    tocando = !tocando;
+    if (temArquivo) tocando ? audio.play() : audio.pause();
+    else tocando ? ctx.resume() : ctx.suspend();
+    atualizarBotao();
+  });
 })();
 </script>
 </body>
